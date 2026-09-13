@@ -1,0 +1,5 @@
+.env
+pgdata
+bin/
+*.exe
+crawlQ_project.md
