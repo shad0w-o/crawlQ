@@ -1,7 +1,9 @@
 package crawl
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -31,6 +33,10 @@ type Options struct {
 	Concurrency int
 	Delay       time.Duration
 	UserAgent   string
+	// CallbackURL, if set, will receive POSTs for each saved page as JSON.
+	CallbackURL string
+	// JobID is an optional identifier propagated from the service when running as a job.
+	JobID string
 }
 
 type Progress struct {
@@ -47,15 +53,7 @@ type Progress struct {
 	UpdatedAt    time.Time `json:"updatedAt,omitempty"`
 }
 
-type Runner struct {
-	store *storage.Store
-}
-
-func NewRunner(store *storage.Store) *Runner {
-	return &Runner{store: store}
-}
-
-func (r *Runner) Run(ctx context.Context, opts Options, onUpdate func(Progress)) (Progress, error) {
+func Run(ctx context.Context, store *storage.Store, opts Options, onUpdate func(Progress)) (Progress, error) {
 	if len(opts.Seeds) == 0 {
 		return Progress{}, errors.New("at least one seed URL is required")
 	}
@@ -177,8 +175,8 @@ func (r *Runner) Run(ctx context.Context, opts Options, onUpdate func(Progress))
 							p.Failed++
 							p.LastError = result.Error.Error()
 						})
-						if r.store != nil {
-							_ = r.store.SavePage(ctx, storage.Page{
+						if store != nil {
+							_ = store.SavePage(ctx, storage.Page{
 								URL:           item.URL,
 								NormalizedURL: parser.NormalizeURL(item.URL),
 								StatusCode:    result.StatusCode,
@@ -194,8 +192,8 @@ func (r *Runner) Run(ctx context.Context, opts Options, onUpdate func(Progress))
 							p.Failed++
 							p.LastError = message
 						})
-						if r.store != nil {
-							_ = r.store.SavePage(ctx, storage.Page{
+						if store != nil {
+							_ = store.SavePage(ctx, storage.Page{
 								URL:           item.URL,
 								NormalizedURL: parser.NormalizeURL(item.URL),
 								StatusCode:    result.StatusCode,
@@ -211,8 +209,8 @@ func (r *Runner) Run(ctx context.Context, opts Options, onUpdate func(Progress))
 							p.Failed++
 							p.LastError = err.Error()
 						})
-						if r.store != nil {
-							_ = r.store.SavePage(ctx, storage.Page{
+						if store != nil {
+							_ = store.SavePage(ctx, storage.Page{
 								URL:           item.URL,
 								NormalizedURL: parser.NormalizeURL(item.URL),
 								StatusCode:    result.StatusCode,
@@ -227,7 +225,7 @@ func (r *Runner) Run(ctx context.Context, opts Options, onUpdate func(Progress))
 						p.LastError = ""
 					})
 
-					if r.store != nil {
+					if store != nil {
 						page := storage.Page{
 							URL:           item.URL,
 							NormalizedURL: parser.NormalizeURL(item.URL),
@@ -235,16 +233,59 @@ func (r *Runner) Run(ctx context.Context, opts Options, onUpdate func(Progress))
 							Content:       parsed.Content,
 							StatusCode:    result.StatusCode,
 						}
-						if err := r.store.SavePage(ctx, page); err != nil {
+						if err := store.SavePage(ctx, page); err != nil {
 							mutate(func(p *Progress) {
 								p.Failed++
 								p.LastError = err.Error()
 							})
 						}
 						for _, link := range parsed.Links {
-							_ = r.store.SaveLink(ctx, parser.NormalizeURL(item.URL), link)
+							_ = store.SaveLink(ctx, parser.NormalizeURL(item.URL), link)
 						}
 					}
+
+						// If a callback URL was provided, notify it asynchronously for this saved page.
+						if opts.CallbackURL != "" {
+							// Copy page data for the callback payload.
+							cbPage := storage.Page{
+								URL:           item.URL,
+								NormalizedURL: parser.NormalizeURL(item.URL),
+								Title:         parsed.Title,
+								Content:       parsed.Content,
+								StatusCode:    result.StatusCode,
+							}
+							if cbPage.Content != "" {
+								cbPage.ContentHash = storage.HashContent(cbPage.Content)
+							}
+							jobID := opts.JobID
+							callback := opts.CallbackURL
+							go func(page storage.Page, callbackURL, job string) {
+								ctxPost, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+								defer cancel()
+								payload := map[string]any{
+									"url":            page.URL,
+									"normalized_url": page.NormalizedURL,
+									"title":          page.Title,
+									"content":        page.Content,
+									"content_hash":   page.ContentHash,
+									"status_code":    page.StatusCode,
+								}
+								if job != "" {
+									payload["job_id"] = job
+								}
+								b, _ := json.Marshal(payload)
+								req, err := http.NewRequestWithContext(ctxPost, "POST", callbackURL, bytes.NewReader(b))
+								if err != nil {
+									return
+								}
+								req.Header.Set("Content-Type", "application/json")
+								client := &http.Client{}
+								resp, err := client.Do(req)
+								if err == nil && resp != nil {
+									resp.Body.Close()
+								}
+							}(cbPage, callback, jobID)
+						}
 
 					if opts.Recursive && item.Depth < opts.MaxDepth {
 						for _, link := range parsed.Links {

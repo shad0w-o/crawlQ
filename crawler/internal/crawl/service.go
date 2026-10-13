@@ -18,22 +18,22 @@ type Job struct {
 }
 
 type Service struct {
-	runner  *Runner
+	store   *storage.Store
 	mu      sync.RWMutex
 	jobs    map[string]*Job
 	cancels map[string]context.CancelFunc
 }
 
-func NewService(runner *Runner) *Service {
+func NewService(store *storage.Store) *Service {
 	return &Service{
-		runner:  runner,
+		store:   store,
 		jobs:    make(map[string]*Job),
 		cancels: make(map[string]context.CancelFunc),
 	}
 }
 
 func (s *Service) Start(opts Options) (Job, error) {
-	if s.runner == nil {
+	if s.store == nil {
 		return Job{}, errors.New("crawl runner is not configured")
 	}
 	if len(opts.Seeds) == 0 {
@@ -55,6 +55,7 @@ func (s *Service) Start(opts Options) (Job, error) {
 			Concurrency: opts.Concurrency,
 			Delay:       opts.Delay,
 			UserAgent:   opts.UserAgent,
+			CallbackURL: opts.CallbackURL,
 		},
 		Progress: Progress{
 			Status:    StatusQueued,
@@ -78,7 +79,11 @@ func (s *Service) Start(opts Options) (Job, error) {
 			j.Progress.StartedAt = time.Now()
 		})
 
-		final, err := s.runner.Run(crawlCtx, opts, func(progress Progress) {
+		// Propagate the job ID into the runner options so callbacks know which job produced pages.
+		optsWithID := opts
+		optsWithID.JobID = jobID
+
+		final, err := Run(crawlCtx, s.store, optsWithID, func(progress Progress) {
 			s.update(jobID, func(j *Job) {
 				j.Progress = progress
 				j.UpdatedAt = time.Now()

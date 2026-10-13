@@ -13,6 +13,7 @@ type Config struct {
 	Concurrency int
 	DelayMs     int
 	APIPort     string
+	AllowedOrigins string
 }
 
 func Load() Config {
@@ -24,6 +25,7 @@ func Load() Config {
 		Concurrency: envInt("CRAWLER_CONCURRENCY", 10),
 		DelayMs:     envInt("CRAWLER_DELAY_MS", 500),
 		APIPort:     envOr("API_PORT", "8080"),
+		AllowedOrigins: envOr("CORS_ALLOWED_ORIGINS", ""),
 	}
 }
 

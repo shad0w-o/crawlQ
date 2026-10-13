@@ -33,9 +33,3 @@ CREATE TABLE IF NOT EXISTS links (
     PRIMARY KEY (from_url, to_url)
 );
 
-CREATE TABLE IF NOT EXISTS crawl_queue (
-    url TEXT PRIMARY KEY,
-    depth INT NOT NULL DEFAULT 0,
-    retries INT NOT NULL DEFAULT 0,
-    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
